@@ -161,3 +161,4 @@ def run_deterministic_rag(query: str):
 run_deterministic_rag(
     "Aircraft and Owner/Operator Information"
 )
+run_deterministic_rag("kth smallest pair distance")
