@@ -20,21 +20,31 @@ else:
         {
             "id": 1,
             "text": "The company expense policy states that meals are covered up to fifty dollars per day.",
+            "source": "sample",
         },
         {
             "id": 2,
             "text": "Remote workers can request an ergonomic chair upgrade once every two years.",
+            "source": "sample",
         },
         {
             "id": 3,
             "text": "The annual tech conference takes place in San Francisco from October 12th to 15th.",
+            "source": "sample",
         },
         {
             "id": 4,
             "text": "All code production deployments require approval from at least two senior engineers.",
+            "source": "sample",
         },
     ]
 df = pd.DataFrame(documents)
+
+# Minimum cosine similarity a retrieved document must clear before it's trusted as
+# relevant. Below this, the query is treated as "no answer found" rather than
+# returning the nearest-anyway match. Tuned empirically against short, keyword-style
+# queries typed against a small, single-domain corpus like the sample above.
+SIMILARITY_THRESHOLD = 0.15
 
 
 # 2. Custom Tokenizer (Text Cleaning)
@@ -68,7 +78,8 @@ TF_IDF_matrix = TF * IDF
 
 
 # 5. Retrieval Engine (Cosine Similarity in NumPy)
-def retrieve_best_document(query: str) -> str:
+def retrieve_best_document(query: str) -> dict | None:
+    """Returns the best-matching {"text", "source", "score"}, or None if nothing clears SIMILARITY_THRESHOLD."""
     query_words = tokenize(query)
 
     # Vectorize the raw query using our built vocabulary space
@@ -85,31 +96,32 @@ def retrieve_best_document(query: str) -> str:
 
     # Avoid division by zero bugs for empty queries
     if query_norm == 0 or np.all(matrix_norms == 0):
-        return "I could not find matching documents."
+        return None
 
     similarities = dot_products / (matrix_norms * query_norm)
     best_match_idx = np.argmax(similarities)
+    best_score = float(similarities[best_match_idx])
 
-    return df.loc[best_match_idx, "text"]
+    if best_score < SIMILARITY_THRESHOLD:
+        return None
+
+    return {
+        "text": df.loc[best_match_idx, "text"],
+        "source": df.loc[best_match_idx].get("source", "sample"),
+        "score": best_score,
+    }
+
+
+STOPWORDS = {"what", "is", "the", "for", "a", "an", "of", "in", "to"}
 
 
 # 6. Rule-Based Generative Extractor (The "No-Model" Generator)
 def generate_answer(query: str, context: str) -> str:
-    """Extracts the exact clause or sentence containing query keywords."""
-    query_keywords = set(tokenize(query)) - {
-        "what",
-        "is",
-        "the",
-        "for",
-        "a",
-        "an",
-        "of",
-        "in",
-        "to",
-    }
+    """Extracts the exact clause or sentence containing query keywords, or reports no answer found."""
+    query_keywords = set(tokenize(query)) - STOPWORDS
     sentences = re.split(r"(?<=[.!?])\s+", context)
 
-    best_sentence = context
+    best_sentence = None
     max_overlap = 0
 
     for sentence in sentences:
@@ -119,16 +131,28 @@ def generate_answer(query: str, context: str) -> str:
             max_overlap = overlap
             best_sentence = sentence.strip()
 
+    if best_sentence is None:
+        return "No answer found: the retrieved document has no sentence matching the query."
+
     return f"Based on the system documents: {best_sentence}"
 
 
 # --- Execution Loop Pipeline ---
 def run_deterministic_rag(query: str):
     print(f"\n--- User Query: {query} ---")
-    retrieved_context = retrieve_best_document(query)
-    print(f"[Retrieved Context Document]: {retrieved_context}")
+    retrieval = retrieve_best_document(query)
 
-    final_output = generate_answer(query, retrieved_context)
+    if retrieval is None:
+        print("[Retrieved Context Document]: none cleared the similarity threshold.")
+        print("[Deterministic Response]: No answer found: nothing in the knowledge base is relevant to this query.")
+        return
+
+    print(
+        f"[Retrieved Context Document] (source={retrieval['source']}, score={retrieval['score']:.3f}): "
+        f"{retrieval['text']}"
+    )
+
+    final_output = generate_answer(query, retrieval["text"])
     print(f"[Deterministic Response]: {final_output}")
 
 
